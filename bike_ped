@@ -1,0 +1,211 @@
+library(shiny)
+library(shinydashboard)
+library(sf)
+library(data.table)
+library(lubridate)
+library(scales)
+library(tidyverse)
+library(leaflet)
+library(shinycssloaders)
+library(DT)
+library(plotly)
+
+#data<-fread("tahoe_congestion.csv")
+
+data <- read_csv("bike_ped.csv") %>%
+  mutate(month_day_year=as.Date(month_day_year, format="%m/%d/%Y"),
+         day=day(month_day_year),
+         month=month(month_day_year),
+         date=month_day_year,
+         day_long=lubridate::wday(date, label=TRUE),
+         month_long=lubridate::month(date, label=TRUE),
+         year=year(date),
+         date_long=paste(day_long,", ", paste(month_long, day, sep=" "), ", ", year, sep=""))
+
+gis<-data %>% distinct(counter_name, X, Y) %>%
+  st_as_sf(crs=4326, coords=c("X","Y"))
+
+### dashboard ###
+
+ui<-dashboardPage(skin="black",
+  dashboardHeader(title="TRPA Bike Ped Monitoring", titleWidth = 450),
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Regional Analysis",
+               tabName = "regional",icon = icon("bar-chart")),
+      menuItem("Counter Location Analysis",
+               tabName = "roadway",icon = icon("car"))
+    )
+  ),
+  dashboardBody(
+    tabItems(
+      tabItem(
+        tabName = "regional",
+        fluidRow(
+          valueBoxOutput("box1", width=3),
+          valueBoxOutput("box2", width=2),
+          valueBoxOutput("box7", width=2),
+          valueBoxOutput("box8", width=3)
+        ),
+        fluidRow(
+          box(title="Average Bike Ped Counts Over Time (Avg Per Counter)", width=6,
+              plotlyOutput("chart1") %>% withSpinner()
+          ),
+          box(title="Seasonal Average Daily Counts", width=6,
+              plotlyOutput("chart5") %>% withSpinner()
+          )),
+        fluidRow(
+          box(title="Average Daily Counts by Location", width=6,
+              plotlyOutput("chart4", height=600) %>% withSpinner()
+          ),
+          box(
+            leafletOutput("site_map1") %>% withSpinner()
+          )
+        )
+      ),
+      tabItem(
+        tabName="roadway",
+        fluidRow(
+          box(width=3,
+              selectInput("select_site", "Select Location", choices=unique(gis$counter_name))
+          ),
+          valueBoxOutput("box3", width=2),
+          valueBoxOutput("box4", width=2),
+          valueBoxOutput("box5", width=2),
+          valueBoxOutput("box6", width=2)
+        ),
+        fluidRow(
+          box(
+            leafletOutput("site_map") %>% withSpinner()
+          ),
+          box(title="Daily Bike/Ped Counts",
+              plotlyOutput("chart3") %>% withSpinner()
+          )),
+        fluidRow(
+          box(title="Seasonal Average Daily Counts",
+              plotlyOutput("chart6") %>% withSpinner()
+          )
+        )
+      )
+    )
+  )
+)
+server <- function(input, output){
+  output$chart1 <- renderPlotly({
+    ggplotly(
+        data %>%
+          filter(count_of_bike_ped !=0) %>%
+          group_by(date) %>%
+          summarise(count=mean(count_of_bike_ped,na.rm=T), no_counters=n_distinct(counter_id)) %>%
+          filter(no_counters > 2) %>%
+          mutate(avg_count_per_counter=count/no_counters) %>%
+          ggplot(aes(date, avg_count_per_counter)) +
+          geom_line() + theme_minimal() + geom_smooth() +
+          theme(axis.title=element_blank())
+    )
+  })
+  output$chart4 <- renderPlotly({
+    ggplotly(
+      data %>%
+        group_by(counter_name) %>%
+        summarise(av_count=round(mean(count_of_bike_ped,na.rm=T),0)) %>%
+        ggplot(aes(x=reorder(counter_name, av_count), av_count)) +
+        geom_col() + theme_minimal() + coord_flip() +
+        theme(axis.title=element_blank())
+    )
+  })
+  output$chart5 <- renderPlotly({
+    ggplotly(
+      data %>%
+        group_by(month_long,year) %>%
+        summarise(av_count=round(mean(count_of_bike_ped,na.rm=T),0)) %>%
+        filter(year!= 2016) %>%
+        mutate(year=as.character(year)) %>%
+        ggplot(aes(month_long, av_count, group=year, fill=year)) +
+        geom_col(position="dodge") + theme_minimal() +
+        theme(axis.title=element_blank())
+    )
+  })
+  output$chart6 <- renderPlotly({
+    id<- gis %>% data.frame %>%
+      filter(counter_name == input$select_site)
+    ggplotly(
+      data %>%
+        filter(counter_name== unique(id$counter_name)) %>%
+        group_by(month_long,year) %>%
+        summarise(av_count=round(mean(count_of_bike_ped,na.rm=T),0)) %>%
+        filter(year!= 2016) %>%
+        mutate(year=as.character(year)) %>%
+        ggplot(aes(month_long, av_count, group=year, fill=year)) +
+        geom_col(position="dodge") + theme_minimal() +
+        theme(axis.title=element_blank())
+    )
+  })
+  output$box1<- renderValueBox({
+    valueBox(color="navy",value=format(sum(data$count_of_bike_ped,na.rm=T),big.mark=","), subtitle="Total Bikes & Pedestrians Counted",width=2)
+  })
+  output$box2<- renderValueBox({
+    valueBox(color="navy",value=round(mean(data$count_of_bike_ped,na.rm=T),0), subtitle="Average Daily Bikes & Pedestrians Counted",width=2)
+  })
+  output$box3<- renderValueBox({
+    valueBox(color="navy",value= data %>%
+               filter(counter_name== input$select_site) %>%
+                 summarise(total=format(sum(count_of_bike_ped,na.rm=T),big.mark=",")) %>% pull(), subtitle="Total Bike/Peds Counted",width=2)
+  })
+  output$box4<- renderValueBox({
+    valueBox(color="navy",value= data %>%
+               filter(counter_name== input$select_site) %>%
+               summarise(total=round(mean(count_of_bike_ped,na.rm=T),0)) %>% pull(), subtitle='Average Daily Bikes & Pedestrians Counted',width=2)
+  })
+  output$box5<- renderValueBox({
+    valueBox(color="navy",value= data %>%
+               filter(counter_name== input$select_site) %>%
+               summarise(total=format(max(count_of_bike_ped,na.rm=T),big.mark=",")) %>% pull(), subtitle='Highest One Day Total',width=2)
+  })
+  output$box6<- renderValueBox({
+    valueBox(color="navy",value= tags$p(data %>%
+               filter(counter_name== input$select_site) %>%
+               arrange(desc(count_of_bike_ped)) %>%
+               slice(1) %>% pull(date_long), style = "font-size: 70%;"),
+             subtitle='Busiest Day',width=2)
+  })
+  output$box7<- renderValueBox({
+    valueBox(color="navy",value= tags$p(data %>%
+                             group_by(date) %>%
+                             summarise(count_of_bike_ped=sum(count_of_bike_ped,na.rm=T)) %>%
+                             arrange(desc(count_of_bike_ped)) %>%
+                             slice(1) %>%
+                             mutate(count_of_bike_ped=format(count_of_bike_ped, big.mark=",")) %>%
+                             pull(count_of_bike_ped), style = "font-size: 100%;"),
+             subtitle='Highest One Day Total',width=2)
+  })
+  output$box8<- renderValueBox({
+    valueBox(color="navy",value= tags$p(data %>%
+                             group_by(date, date_long) %>%
+                             summarise(count_of_bike_ped=sum(count_of_bike_ped,na.rm=T)) %>%
+                             arrange(desc(count_of_bike_ped)) %>%
+                             ungroup() %>%
+                             slice(1) %>% pull(date_long), style = "font-size: 70%;"),
+             subtitle='Busiest Day',width=2)
+  })
+  output$site_map <- renderLeaflet({
+    gis %>% filter(counter_name == input$select_site) %>%
+      leaflet() %>% addMarkers() %>% addTiles()
+  })
+  output$chart3 <- renderPlotly({
+    id<- gis %>% data.frame %>%
+      filter(counter_name == input$select_site)
+    ggplotly(
+    data %>%
+      filter(counter_name== unique(id$counter_name)) %>%
+      ggplot(aes(date, count_of_bike_ped)) +
+      geom_line() + theme_minimal() + geom_smooth() +
+      theme(axis.title=element_blank())
+    )
+  })
+  output$site_map1 <- renderLeaflet({
+    gis %>%
+      leaflet() %>% addMarkers() %>% addTiles()
+  })
+}
+shinyApp(ui, server)
