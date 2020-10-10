@@ -1,0 +1,291 @@
+library(shiny)
+library(shinydashboard)
+library(sf)
+library(data.table)
+library(lubridate)
+library(scales)
+library(tidyverse)
+library(leaflet)
+library(shinycssloaders)
+library(DT)
+library(plotly)
+library(shinyWidgets)
+library(mapview)
+
+data<-bind_rows(
+  read_csv('146899_cor_od_may_19/146899_cor_od_may_19_od_trip_all.csv') %>% mutate(year='2019', month="May") %>% mutate_all(as.character),
+  read_csv('146901_cor_od_may_20/146901_cor_od_may_20_od_trip_all.csv') %>% mutate(year='2020', month="May") %>% mutate_all(as.character),
+  read_csv('146903_cor_od_june_19/146903_cor_od_june_19_od_trip_all.csv') %>% mutate(year='2019', month="June") %>% mutate_all(as.character),
+  read_csv('146902_cor_od_june_20/146902_cor_od_june_20_od_trip_all.csv') %>% mutate(year='2020', month="June") %>% mutate_all(as.character),
+  read_csv('148441_cor_od_july_19_full/148441_cor_od_july_19_full_od_trip_all.csv') %>% mutate(year='2019', month="July") %>% mutate_all(as.character),
+  read_csv('148439_cor_od_july_20_full/148439_cor_od_july_20_full_od_trip_all.csv') %>% mutate(year='2020', month="July") %>% mutate_all(as.character),
+  read_csv('148450_cor_od_aug_19_half/148450_cor_od_aug_19_half_od_trip_all.csv') %>% mutate(year='2019', month="Aug") %>% mutate_all(as.character),
+  read_csv('148457_cor_od_aug_20_half/148457_cor_od_aug_20_half_od_trip_all.csv') %>% mutate(year='2020', month="Aug") %>% mutate_all(as.character),
+  read_csv('149916_cor_od_may_18/149916_cor_od_may_18_od_trip_all.csv') %>% mutate(year='2018', month="May") %>% mutate_all(as.character),
+  read_csv('149917_cor_od_apr_19/149917_cor_od_apr_19_od_trip_all.csv') %>% mutate(year='2019', month="April") %>% mutate_all(as.character),
+  read_csv('149918_cor_od_apr_20/149918_cor_od_apr_20_od_trip_all.csv') %>% mutate(year='2020', month="April") %>% mutate_all(as.character),
+  read_csv('149919_cor_od_june_18/149919_cor_od_june_18_od_trip_all.csv') %>% mutate(year='2018', month="June") %>% mutate_all(as.character),
+  read_csv('149920_cor_od_jul_18/149920_cor_od_jul_18_od_trip_all.csv') %>% mutate(year='2018', month="July") %>% mutate_all(as.character),
+  read_csv('149921_cor_od_aug_18/149921_cor_od_aug_18_od_trip_all.csv') %>% mutate(year='2018', month="Aug") %>% mutate_all(as.character),
+  read_csv('149922_cor_od_apr_18/149922_cor_od_apr_18_od_trip_all.csv') %>% mutate(year='2018', month="April") %>% mutate_all(as.character),
+  read_csv('150294_cor_od_jan_20/150294_cor_od_jan_20_od_trip_all.csv') %>% mutate(year='2020', month="Jan") %>% mutate_all(as.character),
+  read_csv('150293_cor_od_jan_19/150293_cor_od_jan_19_od_trip_all.csv') %>% mutate(year='2019', month="Jan") %>% mutate_all(as.character),
+  read_csv('150292_cor_od_jan_18/150292_cor_od_jan_18_od_trip_all.csv') %>% mutate(year='2018', month="Jan") %>% mutate_all(as.character),
+  read_csv('150291_cor_od_feb_18/150291_cor_od_feb_18_od_trip_all.csv') %>% mutate(year='2018', month="Feb") %>% mutate_all(as.character),
+  read_csv('150290_cor_od_feb_19/150290_cor_od_feb_19_od_trip_all.csv') %>% mutate(year='2019', month="Feb") %>% mutate_all(as.character),
+  read_csv('150289_cor_od_feb_20/150289_cor_od_feb_20_od_trip_all.csv') %>% mutate(year='2020', month="Feb") %>% mutate_all(as.character),
+  read_csv('150288_cor_od_mar_20/150288_cor_od_mar_20_od_trip_all.csv') %>% mutate(year='2020', month="March") %>% mutate_all(as.character),
+  read_csv('150287_cor_od_mar_19/150287_cor_od_mar_19_od_trip_all.csv') %>% mutate(year='2019', month="March") %>% mutate_all(as.character),
+  read_csv('150286_cor_od_mar_18/150286_cor_od_mar_18_od_trip_all.csv') %>% mutate(year='2018', month="March") %>% mutate_all(as.character)
+)
+
+
+db<-data %>%
+  filter(`Day Type`=="0: All Days (M-Su)" & `Day Part`=="0: All Day (12am-12am)") %>%
+  mutate(`Avg All Trip Length (mi)`=na_if(`Avg All Trip Length (mi)`, "N/A" ),
+         `Average Daily O-D Traffic (StL Volume)` = as.numeric(`Average Daily O-D Traffic (StL Volume)`),
+         `Avg All Trip Length (mi)`=as.numeric(`Avg All Trip Length (mi)`),
+         vmt=`Average Daily O-D Traffic (StL Volume)` * `Avg All Trip Length (mi)` ,
+         trip_type=case_when(`Origin Zone Is Pass-Through`=="no" & `Destination Zone Is Pass-Through` == "no"~ "II",
+                             `Origin Zone Is Pass-Through`=="yes" & `Destination Zone Is Pass-Through` == "no"~ "EI",
+                             `Origin Zone Is Pass-Through`=="no" & `Destination Zone Is Pass-Through` == "yes"~ "IE",
+                             `Origin Zone Is Pass-Through`=="yes" & `Destination Zone Is Pass-Through` == "yes"~ "EE"),
+         month_year=paste(month, year, sep="-")) %>%
+  group_by(`Origin Zone Name`, `Destination Zone Name`, month_year, trip_type, month,year) %>%
+  summarise(vmt=sum(vmt,na.rm=T),volume=sum(`Average Daily O-D Traffic (StL Volume)`), avg_trip_len=mean(`Avg All Trip Length (mi)`,na.rm=T)) %>% mutate(id=paste(`Origin Zone Name`, " to " ,`Destination Zone Name`, sep=""))
+
+cor_shp <- st_read("148441_cor_od_july_19_full/Shapefile","148441_cor_od_july_19_full_origin")
+
+myRenderMapview = function (expr, env = parent.frame(), quoted = FALSE)
+{
+  if (!quoted)
+    expr = substitute(mapview:::mapview2leaflet(expr))
+  htmlwidgets::shinyRenderWidget(expr, leafletOutput, env,
+                                 quoted = TRUE)
+}
+
+cor_shp_new<-rbind(st_centroid(cor_shp) %>% filter(is.na(id)),
+                   cor_shp %>% filter(!is.na(id)))
+
+ui<-dashboardPage(skin="black",
+  dashboardHeader(title="Tahoe Regional Vehicle Travel Volumes", titleWidth = 450),
+  dashboardSidebar(width=250,
+                   sidebarMenu(
+      menuItem("Regional Analysis",
+               tabName = "regional",icon = icon("bar-chart")),
+      menuItem("Origin-Destination Volumes",
+               tabName = "roadway",icon = icon("map-marker")),
+      menuItem("Corridor Volumes",
+               tabName = "zone",icon = icon("car")),
+      menuItem("Entry/Exit Station Volumes",
+               tabName = "ent_ex",icon = icon("road"))
+    ),
+    box(width=12,background="black",p("This tool visualizes traffic volumes for the Tahoe region, sourced from StreetLight Data. Explore the tabs above to analyze traffic volumes at the regional level, between origins and destinations, at individual corridors, or for the entry/exit stations. This dashboard is currently under development."))
+  ),
+  dashboardBody(
+    tags$head(
+      tags$style(HTML("
+          .main-sidebar {
+            background-color: black !important;
+          }
+        "))
+    ),
+    tabItems(
+      tabItem(
+        tabName = "regional",
+        fluidRow(
+          tags$img(src="chess.jpg"),
+          column(width=6,
+          fluidRow(box(title="Total Avg Daily Trips", width=12,
+              plotlyOutput("plot_vol_tot") %>% withSpinner()
+          )),
+          fluidRow(box(title="Avg Daily Entry/Exit Trips", width=12,
+              plotlyOutput("plot_vol_reg_entry") %>% withSpinner()
+          )),
+          fluidRow(box(title="Avg Daily Internal Trips", width=12,
+              plotlyOutput("plot_vol_reg_int") %>% withSpinner()
+          ))
+          ), column(width=6,
+          box(title="Regional Corridors & Entry/Exit Points", width=12, height="820px",
+              mapviewOutput("map", height=800) %>% withSpinner()
+          )
+          )
+        )
+      ),
+      tabItem(
+        tabName="roadway",
+        fluidRow(
+          column(width=3),
+          column(width=3,
+                 box(width=12,
+              selectInput("select_od", "Select Origin-Destination", choices=unique(db$id)))
+          ), column(width=6,box(width=12,
+                                valueBoxOutput("od_name",width=12)
+          )
+          )
+        ),
+        fluidRow(
+          box(
+            mapviewOutput("od_map") %>% withSpinner()
+          ),
+          box(title="Average Daily Trips", plotlyOutput("plot_vol") %>% withSpinner()
+          )
+          #  box(title="Travel Times",
+          # plotlyOutput("chart3") %>% withSpinner()
+          # ),
+        )
+      ),
+      tabItem(
+        tabName="zone",
+        fluidRow(
+          column(width=3),
+          column(width=3,
+                 box(width=12,
+                     selectInput("select_zone", "Select Zone", choices=db %>% ungroup() %>% filter(!`Origin Zone Name` %in% c("Alpine Meadows","Brockway Summit","Echo Summit","Kingsbury Grade","Luther Pass","Mount Rose","Spooner Summit")) %>% distinct(`Origin Zone Name`) %>% pull()))
+          ), column(width=6,box(width=12,
+                                valueBoxOutput("zone_name",width=12)
+          )
+          )
+        ),
+        fluidRow(
+          box(
+            mapviewOutput("zone_map") %>% withSpinner()
+          ),
+          box(title="Average Daily Trips", plotlyOutput("zone_plot_vol") %>% withSpinner()
+          )
+        )
+      ),
+      tabItem(
+        tabName="ent_ex",
+        fluidRow(
+          column(width=3),
+          column(width=3,
+                 box(width=12,
+                     selectInput("select_ent_ex", "Select Entry/Exit Station",
+                                 choices=db %>% ungroup() %>% filter(`Origin Zone Name` %in% c("Alpine Meadows","Brockway Summit","Echo Summit","Kingsbury Grade","Luther Pass","Mount Rose","Spooner Summit")) %>% distinct(`Origin Zone Name`) %>% pull()
+                                ))
+          ), column(width=6,box(width=12,
+                                valueBoxOutput("ent_ex_name",width=12)
+          )
+          )
+        ),
+        fluidRow(
+          box(
+            mapviewOutput("ent_ex_map") %>% withSpinner()
+          ),
+          box(title="Average Daily Trips", plotlyOutput("ent_ex_plot_vol") %>% withSpinner()
+          )
+        )
+      )
+    )
+  )
+)
+server <- function(input, output){
+  output$od_map <- myRenderMapview({
+    cor_shp_new %>% left_join(db %>% filter(id == input$select_od) %>% distinct(`Origin Zone Name`,`Destination Zone Name`) %>% mutate(test="test"), by=c("name"='Origin Zone Name')) %>% left_join(db %>% filter(id == input$select_od) %>% distinct(`Origin Zone Name`,`Destination Zone Name`) %>% mutate(test1="test1"), by=c("name"='Destination Zone Name')) %>% filter(!is.na(test) | !is.na(test1))%>% select(name, id) %>%
+      mapview(legend = F, alpha = .5)
+  })
+  output$map <- myRenderMapview({
+        cor_shp_new %>% select(name, id) %>% mapview(legend = F, alpha = .5)
+      })
+  output$zone_map <- myRenderMapview({
+    cor_shp_new  %>% filter(name == input$select_zone) %>% mapview(legend = F, alpha = .5)
+  })
+  output$ent_ex_map <- myRenderMapview({
+    cor_shp_new  %>% filter(name == input$select_ent_ex) %>% mapview(legend = F, alpha = .5)
+  })
+  output$plot_vol <- renderPlotly({
+    db$month <- factor(db$month,levels = c("Jan","Feb","March","April","May", "June", "July","Aug"))
+    ggplotly(
+      db %>% filter(id == input$select_od) %>%
+        ggplot(aes(month, volume, fill=year)) + geom_col(position = "dodge")  +
+        theme_minimal() +
+        theme(axis.title=element_blank()) +
+        scale_fill_manual(values = c("#FF5733","#09ACA8","Black"))
+    )
+  })
+  output$plot_vol_reg_entry <- renderPlotly({
+    db$month <- factor(db$month,levels = c("Jan","Feb","March","April","May", "June", "July","Aug"))
+    ggplotly(
+      db %>% filter(trip_type %in%  c("EI","EE","IE")) %>%
+        group_by(month, year) %>%
+        summarise(volume=sum(volume,na.rm=T)) %>%
+        ggplot(aes(month, volume, fill=year)) + geom_col(position = "dodge") +
+        theme_minimal() +
+        theme(axis.title=element_blank()) +
+        scale_fill_manual(values = c("#FF5733","#09ACA8","Black")) +
+        scale_y_continuous(labels = comma)
+    )
+  })
+  output$plot_vol_reg_int <- renderPlotly({
+    db$month <- factor(db$month,levels = c("Jan","Feb","March","April","May", "June", "July","Aug"))
+    ggplotly(
+      db %>% filter(trip_type == "II") %>%
+        group_by(month, year) %>%
+        summarise(volume=sum(volume,na.rm=T)) %>%
+        ggplot(aes(month, volume, fill=year)) + geom_col(position = "dodge") +
+        theme_minimal() +
+        theme(axis.title=element_blank()) +
+        scale_fill_manual(values = c("#FF5733","#09ACA8","Black"))  +
+        scale_y_continuous(labels = comma)
+    )
+  })
+  output$plot_vol_tot <- renderPlotly({
+    db$month <- factor(db$month,levels = c("Jan","Feb","March","April","May", "June", "July","Aug"))
+    ggplotly(
+      db %>%
+        group_by(month, year) %>%
+        summarise(volume=sum(volume,na.rm=T)) %>%
+        ggplot(aes(month, volume, fill=year)) + geom_col(position = "dodge") +
+        theme_minimal() +
+        theme(axis.title=element_blank()) +
+        scale_fill_manual(values = c("#FF5733","#09ACA8","Black"))  +
+        scale_y_continuous(labels = comma)
+    )
+  })
+  output$od_name <- renderValueBox({
+    valueBox(
+      db %>% filter(id == input$select_od) %>% ungroup() %>% distinct(id) %>% select(id) %>%pull(),
+      subtitle="",color="navy"
+    )
+  })
+  output$zone_name <- renderValueBox({
+    valueBox(
+      db %>% filter(`Origin Zone Name` == input$select_zone) %>% ungroup() %>% distinct(`Origin Zone Name`) %>% select(`Origin Zone Name`) %>%pull(),
+      subtitle="",color="navy"
+    )
+  })
+  output$ent_ex_name <- renderValueBox({
+    valueBox(
+      db %>% filter(`Origin Zone Name` == input$select_ent_ex) %>% ungroup() %>% distinct(`Origin Zone Name`) %>% select(`Origin Zone Name`) %>%pull(),
+      subtitle="",color="navy"
+    )
+  })
+  output$zone_plot_vol<- renderPlotly({
+    db$month <- factor(db$month,levels = c("Jan","Feb","March","April","May", "June", "July","Aug"))
+    ggplotly(
+      db %>%
+        filter( (`Origin Zone Name`==input$select_zone | `Destination Zone Name` == input$select_zone)) %>%
+        ungroup() %>% group_by(month, year) %>% summarise(volume=sum(volume)) %>%
+        ggplot(aes(month, volume, fill=year)) + geom_col(position = "dodge") +
+        theme_minimal() +
+        theme(axis.title=element_blank()) +
+        scale_fill_manual(values = c("#FF5733","#09ACA8","Black"))  +
+        scale_y_continuous(labels = comma)
+    )
+  })
+  output$ent_ex_plot_vol<- renderPlotly({
+    db$month <- factor(db$month,levels = c("Jan","Feb","March","April","May", "June", "July","Aug"))
+    ggplotly(
+      db %>%
+        filter( (`Origin Zone Name`==input$select_ent_ex | `Destination Zone Name` == input$select_ent_ex)) %>%
+        ungroup() %>% group_by(month, year) %>% summarise(volume=sum(volume)) %>%
+        ggplot(aes(month, volume, fill=year)) + geom_col(position = "dodge") +
+        theme_minimal() +
+        theme(axis.title=element_blank()) +
+        scale_fill_manual(values = c("#FF5733","#09ACA8","Black"))  +
+        scale_y_continuous(labels = comma)
+    )
+  })
+}
+shinyApp(ui, server)
