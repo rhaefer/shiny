@@ -1,0 +1,361 @@
+library(tidyverse)
+library(shiny)
+library(leaflet)
+library(sf)
+library(shinydashboard)
+library(DT)
+library(plotly)
+library(shinycssloaders)
+library(geojsonio)
+library(scales)
+library(googlesheets)
+library(rgdal)
+library(shinyBS)
+
+
+### data ###
+
+trip_table <- read_csv("updated-trip-gen.csv")
+TAZ <-geojson_read("https://opendata.arcgis.com/datasets/8753e4259d7b464ead6a4b5be99f2346_6.geojson",
+                   what = "sp") %>%
+  st_as_sf() %>%
+  st_transform(crs = 4326)
+am_skim <- read_csv("test_2019/gis/Skims/SummerAMPeakDriveDistanceSkim.csv")
+pm_skim <- read_csv("test_2019/gis/Skims/SummerPMPeakDriveDistanceSkim.csv")
+md_skim <- read_csv("test_2019/gis/Skims/SummerMiddayDriveDistanceSkim.csv")
+ln_skim <- read_csv("test_2019/gis/Skims/SummerLateNightDriveDistanceSkim.csv")
+skims<-bind_rows (am_skim, pm_skim, md_skim, ln_skim) %>%
+  group_by(`TAZ:1`,TAZ) %>%
+  summarise(distance_mi=mean(`Length (Skim)`, na.rm=T)) %>%
+  mutate(id=paste(`TAZ:1`,TAZ, sep="-"))
+trip_file <- read_csv("test_2019/outputs_summer/trip_file.csv") %>%
+  mutate(id=paste(`startTaz`,endTaz, sep="-")) %>%
+  left_join(skims,by="id")
+vmt_sum <- read_csv("test_2019/outputs_summer/reports/vmt_summary1.csv")
+trip_len_sum <- read_csv("test_2019/outputs_summer/reports/trip_length_summary1.csv")
+overnight_counts <- read_csv("test_2019/zonal/OvernightVisitorZonalData_Summer.csv")
+overnight_rates <- read_csv("test_2019/zonal/VisitorOccupancyRates_Summer.csv")
+socio <- read_csv("test_2019/zonal/SocioEcon_Summer.csv")
+school <- read_csv("test_2019/zonal/SchoolEnrollment.csv")
+trans_choices <-c("A) Bicycle, pedestrian, or transit project in the 2017 RTP/SCS",
+    "B) New bicycle lanes or sidewalk",
+    "C) Bicycle or pedestrian improvements to the roadway system, such as “green lanes,” bike boxes, pedestrian-activated crossings, or similar",
+    "D) Amendment to the RTP/SCS*","E) Changes to the Roadway Network","F) Bike/Ped Project not included in A-D","G) Microtransit project","H) Other")
+
+### app ###
+ui <- dashboardPage(
+  skin = "black",
+  dashboardHeader(title = "TRPA Project Analysis Tool",
+                  titleWidth = 450),
+  dashboardSidebar(width = 250,
+    selectInput(
+      "project_type",
+      "Select Project Type",
+      choices = c(
+        "",
+        "Transportation",
+        "Housing",
+        "Lodging",
+        "Commercial",
+        "Mixed-Use",
+        "Government",
+        "Recreation",
+        "Regional Plan Amendment"
+      )
+    ),
+    box(
+      width = 12,
+      background = "black",
+      p(
+        "This tool assists project sponsors to analyze the transportation impacts of proposed projects. Please select from the options that best characterize the project. For more information please contact..."
+      )
+    )
+  ),
+  dashboardBody(
+    bsTooltip(id = "trans", title = "*This includes new bicycle, pedestrian, and transit projects, excluding microtransit,  located within ½ mile of a transit stop, within the boundaries of the City of South Lake Tahoe, or within the boundaries of a Regional Center, Town Center or Tourist District; or new bicycle, pedestrian and transit projects, excluding microtransit, not included in the RTP/SCS but which are located within ½ mile of a transit stop, within the boundaries of the City of South Lake Tahoe, or within the boundaries of a Regional Center, Town Center or Tourist District.", placement = "bottom", trigger="hover"),
+      tags$head(tags$style(
+        HTML(
+          '/* main sidebar */
+        .skin-black .main-sidebar {
+                              background-color: #000000;
+                              }'))),
+      fluidRow(
+        conditionalPanel(condition = "input.project_type=='Transportation'",
+          conditionalPanel(condition = "input.project_type=='Transportation'",
+                           column(width=6,
+                           fluidRow(
+                             box(
+                               width = 12,
+                               checkboxGroupInput("trans", "Transportation Checklist (select one)", trans_choices),
+                               actionButton("action_button", "Submit")
+                             )
+                           ))),
+          conditionalPanel(condition = "input.trans=='A) Bicycle, pedestrian, or transit project in the 2017 RTP/SCS' | input.trans=='B) New bicycle lanes or sidewalk' | input.trans=='C) Bicycle or pedestrian improvements to the roadway system, such as “green lanes,” bike boxes, pedestrian-activated crossings, or similar' | input.trans=='D) Amendment to the RTP/SCS*' | input.trans=='E) Changes to the Roadway Network' | input.trans=='F) Bike/Ped Project not included in A-D' | input.trans=='G) Microtransit project' | input.trans=='H) Other'",
+                           fluidRow(
+                             valueBoxOutput("trans_analysis", width = 5),
+                             box(width=3,
+                             fileInput(inputId = "filemap", label = "Upload Project GIS Shapefile",
+                                       multiple = TRUE,
+                                       accept = c('.shp','.dbf','.sbn','.sbx','.shx','.prj'))),
+                             box(width=3,sliderInput("comp_year",
+                                         "Select Completion Year",
+                                         min=2019, max=2045, value=2019,sep = "")),
+                             box(width=6,textAreaInput(
+                               "project_text",
+                               "Describe your project (capacity, lanes, speeds, etc)",
+                               width = "100%",
+                               height = "100px"))
+                           ),
+                                 box(width=12,leafletOutput("project_map", height=550) %>% withSpinner(color="#000000"))
+                           ))),
+          conditionalPanel(condition = "input.project_type=='Regional Plan Amendment'",
+                           column(width=6,
+                                  box(width=12,
+                             leafletOutput("map1", height=500)%>% withSpinner(color="#000000"))),
+                           column(width=6,
+                                  box(width=6,
+                                     selectInput("taz1", "Select TAZ", choices=9:282),
+                                     numericInput("res1", "# Res Units", value=0, min=0, max=3000),
+                                     numericInput("tau1", "# TAUs", value=0, min=0, max=3000),
+                                     numericInput("cfa1", "# CFA", value=0, min=0, max=10000)
+                                     )
+                                  )
+    ),
+          conditionalPanel(
+            condition = "input.project_type =='Housing' | input.project_type =='Lodging' | input.project_type =='Commercial'| input.project_type =='Mixed-Use' | input.project_type =='Government' | input.project_type =='Recreation'",
+            fluidRow(
+              column(width=6,
+                box(
+                  title = "Select Project Location", width = 12,
+                    leafletOutput("map", height = 400) %>% withSpinner(color="#000000")
+                ),
+                box(
+                  width = 4,
+                  actionButton("submit_button", "Submit Project")
+                ),
+                box(
+                  width = 12,
+                  textAreaInput(
+                    "text_input",
+                    "Explain methodology for calculating project characteristics",
+                    width = "100%",
+                    height = "300px"
+                  )
+                )),
+              column(width=6,
+                     fluidRow(
+                       valueBoxOutput(width = 6, "vmt_box"),
+                       valueBoxOutput(width = 6, "trips_box")
+                     ),
+            column(width=6,
+                   fluidRow(
+                   box(
+                width = 12,
+                sliderInput(
+                  "res",
+                  "% Resident Trips",
+                  min = 0,
+                  max = 100,
+                  value = 50
+                ),
+                sliderInput(
+                  "ov_vis",
+                  "% Overnight Visitor Trips",
+                  min = 0,
+                  max = 100,
+                  value = 50
+                ),
+                sliderInput(
+                  "emp",
+                  "% Employee Trips",
+                  min = 0,
+                  max = 100,
+                  value = 50
+                )
+              )),
+              fluidRow(
+            box(
+              width = 12,
+              sliderInput(
+                "non_auto",
+                "% Non Auto Trips",
+                min = 0,
+                max = 100,
+                value = 50
+              ),
+              sliderInput(
+                "capture",
+                "% Internal Capture",
+                min = 0,
+                max = 100,
+                value = 50
+              )
+            ))),
+             column(width=6 ,
+                    fluidRow(
+                     box(
+                width = 12,
+                selectInput(
+                  "land_use1",
+                  "Select Land Use Type #1",
+                  choices = c("", "land use 1", "land use 2", "land use 3", "land use 4", "land use 15"),
+                  multiple = T
+                ),
+                numericInput(
+                  "units",
+                  "Number of Units",
+                  value = 0,
+                  min = 0,
+                  max = 1000
+                )
+              )),
+          fluidRow(
+            conditionalPanel(
+              condition = "input.land_use1=='land use 1'",
+              box(
+                width = 12,
+                selectInput(
+                  "land_use2",
+                  "Select Land Use Type #2",
+                  choices = c("", "land use 1", "land use 2", "land use 3", "land use 4", "land use 15"),
+                  multiple = T
+                ),
+                numericInput(
+                  "units",
+                  "Number of Units",
+                  value = 0,
+                  min = 0,
+                  max = 1000
+                )
+              )
+            )
+          ),
+          fluidRow(
+            conditionalPanel(
+              condition = "input.land_use2=='land use 1'",
+              box(
+                width = 12,
+                selectInput(
+                  "land_use3",
+                  "Select Land Use Type #2",
+                  choices = c("", "land use 1", "land use 2", "land use 3", "land use 4", "land use 15"),
+                  multiple = T
+                ),
+                numericInput(
+                  "units",
+                  "Number of Units",
+                  value = 0,
+                  min = 0,
+                  max = 1000
+                )
+              )
+            )
+          ),
+          fluidRow(
+            conditionalPanel(
+              condition = "input.land_use3=='land use 1'",
+              box(
+                width = 12,
+                selectInput(
+                  "land_use4",
+                  "Select Land Use Type #2",
+                  choices = c("", "land use 1", "land use 2", "land use 3", "land use 4", "land use 15"),
+                  multiple = T
+                ),
+                numericInput(
+                  "units",
+                  "Number of Units",
+                  value = 0,
+                  min = 0,
+                  max = 1000
+                )
+              )
+              )
+            )
+          )
+        )
+            )
+          )
+  )
+)
+server <- function(input, output) {
+  output$map <- renderLeaflet({
+    leaflet() %>%
+      addPolygons(
+        data = TAZ,
+        layerId = ~ TAZ,
+        fillOpacity = 0,
+        opacity = 0
+      ) %>%
+      addTiles() %>%
+      setView(lng = -120.042034,
+              lat = 39.092979,
+              zoom = 10)
+  })
+  observeEvent(input$map_shape_click, {
+    leafletProxy("map") %>%
+      clearMarkers() %>%
+      addMarkers(lng = input$map_click$lng,
+                 lat = input$map_click$lat)
+  })
+  observeEvent(input$action_button, {
+    req(input$trans)
+    if (input$trans %in% c("E) Changes to the Roadway Network","F) Bike/Ped Project not included in A-D","G) Microtransit project","H) Other")) {
+      output$trans_analysis <- renderValueBox({
+        valueBox("VMT Analysis Required", "", color = "red")
+      })
+    }
+    else if (input$trans %in% trans_choices) {
+      output$trans_analysis <- renderValueBox({
+        valueBox("VMT Analysis NOT Required", "", color = "olive")
+      })
+    }
+  })
+  observeEvent(input$submit_button, {
+    output$trips_box <- renderValueBox({
+      valueBox(66, "Total Trips", color = "red")
+    })
+  })
+  observeEvent(input$submit_button, {
+    output$vmt_box <- renderValueBox({
+      valueBox(500, "Total Vehicle Miles Traveled (VMT)", color = "red")
+    })
+  })
+  output$map1 <- renderLeaflet({
+    TAZ %>%
+    leaflet() %>%
+      addPolygons(fillOpacity = .5, opacity = 1, color="white", weight=2,
+                  fillColor = "#A1A2A2",
+                  label=paste0("TAZ: ",TAZ$TAZ),
+                  highlight = highlightOptions(
+                    weight = 3,
+                    fillOpacity = 0,
+                    color = "red",
+                    opacity = .7,
+                    bringToFront = TRUE,
+                    sendToBack = TRUE)) %>%
+      addTiles() %>%
+      setView(lng = -120.042034, lat = 39.092979, zoom = 10)
+  })
+  map<-eventReactive(input$filemap,{
+    shpdf <- input$filemap
+    tempdirname <- dirname(shpdf$datapath[1])
+    for(i in 1:nrow(shpdf)){
+      file.rename(shpdf$datapath[i], paste0(tempdirname, "/", shpdf$name[i]))
+    }
+    map <- readOGR(paste(tempdirname, shpdf$name[grep(pattern = "*.shp$", shpdf$name)], sep = "/"))
+    st_as_sf(map) %>% st_transform(crs=4326)
+  })
+  output$project_map <- renderLeaflet({
+    req(input$filemap)
+    map <- map()
+    leaflet(map) %>% addTiles() %>% addPolylines(fillOpacity = 1, opacity = 1, fillColor = "red", color="red") %>%
+      addProviderTiles(providers$Stamen.TonerLite, group = "Toner Lite") %>%
+      addProviderTiles(providers$Esri.WorldImagery, group = "Satellite") %>%
+      addProviderTiles(providers$OpenStreetMap.Mapnik, group = "OSM") %>%
+      addLayersControl(
+        baseGroups = c("Satellite","OSM",  "Toner Lite"),
+        options = layersControlOptions(collapsed = FALSE))
+  })
+}
+shinyApp(ui, server)
