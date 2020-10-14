@@ -1,5 +1,5 @@
-library(shiny)
 library(shiny.semantic)
+library(shiny)
 library(tidyverse)
 library(semantic.dashboard)
 library(leaflet)
@@ -11,37 +11,48 @@ library(maptools)
 library(nabor)
 library(shinycssloaders)
 
-ships<-read.csv("ships.csv") # read in ships data
+ships<-read.csv("ships_small.csv")
 
 ui <- dashboard_page(
-  dashboardHeader(title="Baltic Sea Ship Dashboard"),
+  dashboardHeader(disable=T),
   dashboardSidebar(side = "left", size = "thin", color = "teal",
                    sidebarMenu(
                      menuItem(tabName = "tab1", "Ship Dashboard"),
-                     menuItem(tabName = "tab2", "More Information")),
-                   box(width=12,background="black",p("This tool demonstrates the parameters of the Tahoe Effective Population Model and allows the user to experiment with different quantitative assumptions to observe the impact on the estimated effective population of the Tahoe region. For more information on the model methodology, click on the background info tab above. This dashboard is under development is not currently an official source of TRPA data."))),
-  dashboardBody(tabItems(
+                     menuItem(tabName = "tab2", "More Information"))),
+  dashboardBody( tags$img(
+    src = "port-gdansk.jpg",
+    style = 'position: absolute'
+  ),tabItems(
     tabItem(tabName = "tab1",
+            fluidRow(
+              box(width=12, ribbon=F,color="red", collapsible = F,
+                  title="Baltic Sea Ship Explorer",style = "font-size: 110%;",
+                  title_side = "top left", "This tool allows you to explore the movements of ships traveling from various ports in the Baltic Sea. Select the type of ship and ship name from the dropdowns below in blue. More information about this tool can be found on the more information tab on the left. For questions, contact Reid Haefer at xxxxx@appsilon.com"),
+             # img(src='port-gdansk.jpg', align = "right")
+              ),
             fluidRow(
               column(width=3,
                      fluidRow(
-            box(width=4, color="black", title="Select Ship Type",
-            dropdown_input("vessel_type",value="Cargo" ,choices=unique(ships$ship_type)))),
+            box(width=4, color="blue", title="Select Ship Type",title_side = "top left",
+            dropdown_input("vessel_type",value="Pleasure" ,choices=unique(ships$ship_type)))),
             fluidRow(
-            box(width=4, color="grey", title="Select Ship Name",
+            box(width=4, color="blue", title="Select Ship Name", title_side = "top left",
             dropdown_input("ship_name", choices= ships %>% distinct(SHIPNAME) %>% pull(),
-                           value="KAROLI")
+                           value="WALONA")
             ))),
-            column(width=8,
+            column(width=9,
+                   box(title="Ship Information", width=8,color="black",
                    fluidRow(
-                     box(title="", width=8,ribbon=F, collapsible = F,
-                         textOutput("text") )
-                   ),
+                         textOutput("text")),
               fluidRow(
-            box(title="Maximum Distance",color="black", width=8,
-            leafletOutput("map", height=600) %>% withSpinner())))
+            leafletOutput("map", height=550) %>% withSpinner())))
             )),
-    tabItem(tabName = "tab2")))
+    tabItem(tabName = "tab2",
+            fluidRow(box(title="App Information",width = 5, ribbon=T,color="black", title_side = "top left",
+                         tags$p("The full code for the Baltic Sea Ship App can be found on",tags$a(href="https://github.com/rhaefer/shiny/blob/main/appsilon", "Github" )),
+                         tags$p("This tool was created by Reid Haefer using",tags$a(href="https://shiny.rstudio.com/", "R-Shiny"), "For more of Reid's work, visit his website at",tags$a(href="http://reidhaefer.rbind.io/", "reidhaefer.rbind.io")),
+                         tags$p("Background image is property of ZMPG SA and sourced from",tags$a(href="https://www.libelium.com/libeliumworld/success-stories/reducing-logistics-environmental-impact-by-air-quality-monitoring-in-the-baltic-sea-port-of-gdansk-poland/", "libelium.com."),"This is a demonstration app and should not be used for any commercial or other purposes.")
+            )))))
 )
 server <- function(input, output,session) {
   output$text <- renderText({
@@ -84,14 +95,20 @@ output$map<-renderLeaflet({
     result<-bind_cols(test,
                       nndist(test.ppp) %>% data.frame() %>% rename(dist=".")
     ) %>% filter(dist==max(dist))
-    bind_rows(result,bind_cols(test,nndist(test.ppp) 
+    final<-bind_rows(result,bind_cols(test,nndist(test.ppp) 
                                %>% data.frame() %>% 
                                  rename(dist=".")) %>% 
                              filter(order==result %>% 
-                                      pull(order) +1)) %>% 
-      leaflet() %>% addMarkers() %>% addTiles()
+                                      pull(order) +1))
+    final %>% leaflet() %>% addMarkers(popup = paste('<strong>',"Time:",'</strong>', final$DATETIME, "<br>",
+                                                     '<strong>',"Ship ID:",'</strong>', final$SHIP_ID,"<br>",
+                                                     '<strong>',"Speed:",'</strong>', final$SPEED, "<br>",
+                                                     '<strong>',"Course:",'</strong>', final$COURSE, "<br>",
+                                                     '<strong>', "Heading:",'</strong>', final$HEADING,"<br>",
+                                                     '<strong>',"Port:",'</strong>', final$PORT,"<br>",
+                                                     '<strong>',"Destination:",'</strong>', final$DESTINATION)) %>% 
+      addProviderTiles("OpenStreetMap.Mapnik")
   })
 }
 shinyApp(ui, server)
-
 
