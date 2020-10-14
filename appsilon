@@ -1,0 +1,97 @@
+library(shiny)
+library(shiny.semantic)
+library(tidyverse)
+library(semantic.dashboard)
+library(leaflet)
+library(sf)
+library(lwgeom)
+library(funrar)
+library(spatstat)
+library(maptools)
+library(nabor)
+library(shinycssloaders)
+
+ships<-read.csv("ships.csv") # read in ships data
+
+ui <- dashboard_page(
+  dashboardHeader(title="Baltic Sea Ship Dashboard"),
+  dashboardSidebar(side = "left", size = "thin", color = "teal",
+                   sidebarMenu(
+                     menuItem(tabName = "tab1", "Ship Dashboard"),
+                     menuItem(tabName = "tab2", "More Information")),
+                   box(width=12,background="black",p("This tool demonstrates the parameters of the Tahoe Effective Population Model and allows the user to experiment with different quantitative assumptions to observe the impact on the estimated effective population of the Tahoe region. For more information on the model methodology, click on the background info tab above. This dashboard is under development is not currently an official source of TRPA data."))),
+  dashboardBody(tabItems(
+    tabItem(tabName = "tab1",
+            fluidRow(
+              column(width=3,
+                     fluidRow(
+            box(width=4, color="black", title="Select Ship Type",
+            dropdown_input("vessel_type",value="Cargo" ,choices=unique(ships$ship_type)))),
+            fluidRow(
+            box(width=4, color="grey", title="Select Ship Name",
+            dropdown_input("ship_name", choices= ships %>% distinct(SHIPNAME) %>% pull(),
+                           value="KAROLI")
+            ))),
+            column(width=8,
+                   fluidRow(
+                     box(title="", width=8,ribbon=F, collapsible = F,
+                         textOutput("text") )
+                   ),
+              fluidRow(
+            box(title="Maximum Distance",color="black", width=8,
+            leafletOutput("map", height=600) %>% withSpinner())))
+            )),
+    tabItem(tabName = "tab2")))
+)
+server <- function(input, output,session) {
+  output$text <- renderText({
+          test<-ships %>%
+            st_as_sf(crs=4326, coords=c("LON","LAT")) %>%
+            filter(SHIPNAME==input$ship_name) 
+          test$order <- 1:nrow(test)
+          test_proj<-st_transform(test, 3857)
+          test.sp <- as(test_proj, "Spatial")
+          test.ppp <- as.ppp(test.sp)
+          result<-bind_cols(test,
+                            nndist(test.ppp) %>% data.frame() %>% rename(dist=".")
+          ) %>% filter(dist==max(dist))
+          paste("The",input$ship_name,input$ship_type,"ship traveled a maximum distance of",
+          bind_rows(result,bind_cols(test,nndist(test.ppp) 
+                                     %>% data.frame() %>% 
+                                       rename(dist=".")) %>% 
+                      filter(order==result %>% 
+                               pull(order) +1)) %>%
+            data.frame()%>%
+            select(dist) %>%
+            filter(dist==max(dist)) %>%
+            mutate(dist=round(dist,1)) %>% pull() %>%
+            as.character(),"meters between any two observations."
+          )
+  })
+observeEvent(input$vessel_type,{
+  update_dropdown_input(session,"ship_name", 
+                        choices=ships %>% filter(ship_type==input$vessel_type) %>% distinct(SHIPNAME) %>% pull(),
+                        value=ships %>% filter(ship_type==input$vessel_type) %>% distinct(SHIPNAME) %>% slice(1) %>% pull())
+})
+output$map<-renderLeaflet({
+    test<-ships %>%
+      st_as_sf(crs=4326, coords=c("LON","LAT")) %>%
+      filter(SHIPNAME==input$ship_name) 
+    test$order <- 1:nrow(test)
+    test_proj<-st_transform(test, 3857)
+    test.sp <- as(test_proj, "Spatial")
+    test.ppp <- as.ppp(test.sp)
+    result<-bind_cols(test,
+                      nndist(test.ppp) %>% data.frame() %>% rename(dist=".")
+    ) %>% filter(dist==max(dist))
+    bind_rows(result,bind_cols(test,nndist(test.ppp) 
+                               %>% data.frame() %>% 
+                                 rename(dist=".")) %>% 
+                             filter(order==result %>% 
+                                      pull(order) +1)) %>% 
+      leaflet() %>% addMarkers() %>% addTiles()
+  })
+}
+shinyApp(ui, server)
+
+
