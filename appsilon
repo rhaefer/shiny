@@ -11,8 +11,93 @@ library(maptools)
 library(nabor)
 library(shinycssloaders)
 
+# read in ship file - I had to truncate this file to 1 mil records because I ran out of memory when posting to shinyapps.io with my home laptop
 ships<-read.csv("ships_small.csv")
 
+# define the module UI
+shipUI<-function(id){
+  fluidRow(
+    column(width=3,
+           fluidRow(
+             box(width=4, color="blue", title="Select Ship Type",title_side = "top left",
+                 dropdown_input(NS(id,"vessel_type"),value="Pleasure" ,choices=unique(ships$ship_type)))),
+           fluidRow(
+             box(width=4, color="blue", title="Select Ship Name", title_side = "top left",
+                 dropdown_input(NS(id,"ship_name"), choices= ships %>% distinct(SHIPNAME) %>% pull(),
+                                value="WALONA")
+             ))),
+    column(width=9,
+           box(title="Ship Information", width=8,color="black",
+               fluidRow(
+                 textOutput(NS(id,"text"))),
+               fluidRow(
+                 leafletOutput(NS(id,"map"), height=550) %>% withSpinner())))
+  )
+}
+
+# define the module server
+shipServer <- function(id) {
+  moduleServer(id, function(input, output, session) {
+    output$text <- renderText({
+      ships_sf<-ships %>%
+        st_as_sf(crs=4326, coords=c("LON","LAT")) %>%
+        filter(SHIPNAME==input$ship_name) 
+      ships_sf$order <- 1:nrow(ships_sf)
+      ships_sf_proj<-st_transform(ships_sf, 3857)
+      ships_sp<- as(ships_sf_proj, "Spatial")
+      ships.ppp <- as.ppp(ships_sp)
+      result<-bind_cols(ships_sf,
+                        nndist(ships.ppp) %>% data.frame() %>% rename(dist=".")
+      ) %>% filter(dist==max(dist))
+      paste("The",input$ship_name,input$ship_type,"ship traveled a maximum distance of",
+            bind_rows(result,bind_cols(ships_sf,nndist(ships.ppp) 
+                                       %>% data.frame() %>% 
+                                         rename(dist=".")) %>% 
+                        filter(order==result %>% 
+                                 pull(order) +1)) %>% 
+              arrange(desc(DATETIME)) %>% slice(1:2) %>%
+              data.frame()%>%
+              select(dist) %>%
+              filter(dist==max(dist)) %>%
+              mutate(dist=round(dist,1)) %>% pull() %>%
+              as.character(),"meters between any two observations."
+      )
+    })
+    observeEvent(input$vessel_type,{
+      update_dropdown_input(session,"ship_name", 
+                            choices=ships %>% filter(ship_type==input$vessel_type) %>% distinct(SHIPNAME) %>% pull(),
+                            value=ships %>% filter(ship_type==input$vessel_type) %>% distinct(SHIPNAME) %>% slice(1) %>% pull())
+    })
+    output$map<-renderLeaflet({
+      ships_sf<-ships %>%
+        st_as_sf(crs=4326, coords=c("LON","LAT")) %>%
+        filter(SHIPNAME==input$ship_name) 
+      ships_sf$order <- 1:nrow(ships_sf)
+      ships_sf_proj<-st_transform(ships_sf, 3857)
+      ships_sp<- as(ships_sf_proj, "Spatial")
+      ships.ppp <- as.ppp(ships_sp)
+      result<-bind_cols(ships_sf,
+                        nndist(ships.ppp) %>% data.frame() %>% rename(dist=".")
+      ) %>% filter(dist==max(dist))
+      final<-bind_rows(result,bind_cols(ships_sf,nndist(ships.ppp) 
+                                        %>% data.frame() %>% 
+                                          rename(dist=".")) %>% 
+                         filter(order==result %>% 
+                                  pull(order) +1))%>% 
+        arrange(desc(DATETIME)) %>% slice(1:2)
+      final %>% leaflet() %>% addMarkers(popup = paste('<strong>',"Time:",'</strong>', final$DATETIME, "<br>",
+                                                       '<strong>',"Ship ID:",'</strong>', final$SHIP_ID,"<br>",
+                                                       '<strong>',"Speed:",'</strong>', final$SPEED, "<br>",
+                                                       '<strong>',"Course:",'</strong>', final$COURSE, "<br>",
+                                                       '<strong>', "Heading:",'</strong>', final$HEADING,"<br>",
+                                                       '<strong>',"Port:",'</strong>', final$PORT,"<br>",
+                                                       '<strong>',"Destination:",'</strong>', final$DESTINATION)) %>% 
+        addProviderTiles("OpenStreetMap.Mapnik")
+    })
+  })
+}
+
+# run the application  
 ui <- dashboard_page(
   dashboardHeader(disable=T),
   dashboardSidebar(side = "left", size = "thin", color = "teal",
@@ -28,87 +113,19 @@ ui <- dashboard_page(
               box(width=12, ribbon=F,color="red", collapsible = F,
                   title="Baltic Sea Ship Explorer",style = "font-size: 110%;",
                   title_side = "top left", "This tool allows you to explore the movements of ships traveling from various ports in the Baltic Sea. Select the type of ship and ship name from the dropdowns below in blue. More information about this tool can be found on the more information tab on the left. For questions, contact Reid Haefer at xxxxx@appsilon.com"),
-             # img(src='port-gdansk.jpg', align = "right")
-              ),
-            fluidRow(
-              column(width=3,
-                     fluidRow(
-            box(width=4, color="blue", title="Select Ship Type",title_side = "top left",
-            dropdown_input("vessel_type",value="Pleasure" ,choices=unique(ships$ship_type)))),
-            fluidRow(
-            box(width=4, color="blue", title="Select Ship Name", title_side = "top left",
-            dropdown_input("ship_name", choices= ships %>% distinct(SHIPNAME) %>% pull(),
-                           value="WALONA")
-            ))),
-            column(width=9,
-                   box(title="Ship Information", width=8,color="black",
-                   fluidRow(
-                         textOutput("text")),
-              fluidRow(
-            leafletOutput("map", height=550) %>% withSpinner())))
-            )),
+              # img(src='port-gdansk.jpg', align = "right")
+            ),
+            shipUI("ship")
+    ),
     tabItem(tabName = "tab2",
             fluidRow(box(title="App Information",width = 5, ribbon=T,color="black", title_side = "top left",
-                         tags$p("The full code for the Baltic Sea Ship App can be found on",tags$a(href="https://github.com/rhaefer/shiny/blob/main/appsilon", "Github" )),
-                         tags$p("This tool was created by Reid Haefer using",tags$a(href="https://shiny.rstudio.com/", "R-Shiny"), "For more of Reid's work, visit his website at",tags$a(href="http://reidhaefer.rbind.io/", "reidhaefer.rbind.io")),
+                         tags$p("The full code for the Baltic Sea Ship App can be found on",tags$a(href="https://github.com/rhaefer/shiny/blob/main/appsilon", "Github." )),
+                         tags$p("This tool was created by Reid Haefer using",tags$a(href="https://shiny.rstudio.com/", "R-Shiny."), "For more of Reid's work, visit his website at",tags$a(href="http://reidhaefer.rbind.io/", "reidhaefer.rbind.io.")),
                          tags$p("Background image is property of ZMPG SA and sourced from",tags$a(href="https://www.libelium.com/libeliumworld/success-stories/reducing-logistics-environmental-impact-by-air-quality-monitoring-in-the-baltic-sea-port-of-gdansk-poland/", "libelium.com."),"This is a demonstration app and should not be used for any commercial or other purposes.")
             )))))
 )
 server <- function(input, output,session) {
-  output$text <- renderText({
-          test<-ships %>%
-            st_as_sf(crs=4326, coords=c("LON","LAT")) %>%
-            filter(SHIPNAME==input$ship_name) 
-          test$order <- 1:nrow(test)
-          test_proj<-st_transform(test, 3857)
-          test.sp <- as(test_proj, "Spatial")
-          test.ppp <- as.ppp(test.sp)
-          result<-bind_cols(test,
-                            nndist(test.ppp) %>% data.frame() %>% rename(dist=".")
-          ) %>% filter(dist==max(dist))
-          paste("The",input$ship_name,input$ship_type,"ship traveled a maximum distance of",
-          bind_rows(result,bind_cols(test,nndist(test.ppp) 
-                                     %>% data.frame() %>% 
-                                       rename(dist=".")) %>% 
-                      filter(order==result %>% 
-                               pull(order) +1)) %>%
-            data.frame()%>%
-            select(dist) %>%
-            filter(dist==max(dist)) %>%
-            mutate(dist=round(dist,1)) %>% pull() %>%
-            as.character(),"meters between any two observations."
-          )
-  })
-observeEvent(input$vessel_type,{
-  update_dropdown_input(session,"ship_name", 
-                        choices=ships %>% filter(ship_type==input$vessel_type) %>% distinct(SHIPNAME) %>% pull(),
-                        value=ships %>% filter(ship_type==input$vessel_type) %>% distinct(SHIPNAME) %>% slice(1) %>% pull())
-})
-output$map<-renderLeaflet({
-    test<-ships %>%
-      st_as_sf(crs=4326, coords=c("LON","LAT")) %>%
-      filter(SHIPNAME==input$ship_name) 
-    test$order <- 1:nrow(test)
-    test_proj<-st_transform(test, 3857)
-    test.sp <- as(test_proj, "Spatial")
-    test.ppp <- as.ppp(test.sp)
-    result<-bind_cols(test,
-                      nndist(test.ppp) %>% data.frame() %>% rename(dist=".")
-    ) %>% filter(dist==max(dist))
-    final<-bind_rows(result,bind_cols(test,nndist(test.ppp) 
-                               %>% data.frame() %>% 
-                                 rename(dist=".")) %>% 
-                             filter(order==result %>% 
-                                      pull(order) +1))
-    final %>% leaflet() %>% addMarkers(popup = paste('<strong>',"Time:",'</strong>', final$DATETIME, "<br>",
-                                                     '<strong>',"Ship ID:",'</strong>', final$SHIP_ID,"<br>",
-                                                     '<strong>',"Speed:",'</strong>', final$SPEED, "<br>",
-                                                     '<strong>',"Course:",'</strong>', final$COURSE, "<br>",
-                                                     '<strong>', "Heading:",'</strong>', final$HEADING,"<br>",
-                                                     '<strong>',"Port:",'</strong>', final$PORT,"<br>",
-                                                     '<strong>',"Destination:",'</strong>', final$DESTINATION)) %>% 
-      addProviderTiles("OpenStreetMap.Mapnik")
-  })
+  shipServer("ship")
 }
 shinyApp(ui, server)
 
