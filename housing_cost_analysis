@@ -1,0 +1,144 @@
+library(readxl)
+library(tidyverse)
+library(shinydashboard)
+library(shiny)
+library(plotly)
+library(shinycssloaders)
+library(scales)
+library(ggrepel)
+library(shinyWidgets)
+library(shinyalert)
+
+
+cost<-read_excel("HCAT_v3_010520.xlsx", sheet="Sheet1") %>%
+  filter(!is.na(`Unit Quantity`))
+
+cost_test <- cost %>% 
+  mutate(id=paste(`Cost Subcategory`, `Cost Category`, `Development Type`, `Unit Quantity`, sep="-"))
+
+cum_int_fn<- function(P, i, n){
+  ((P*(1+i)^n) - P)
+}
+
+cum_int_fn(cost %>% filter(`Cost Category` !="Financing" & Action!="No Action") %>% 
+             summarise(Cost=sum(Cost)) %>% pull(),
+           .036/12, 
+           13)
+
+ui <- dashboardPage(skin="black",
+  dashboardHeader(title="Tahoe Housing Cost-Analysis Tool", titleWidth = 450),
+  dashboardSidebar(width=300,box(width=12,background="black",
+                       img(src='zoom_background_50th.jpg',  height = 150, width = 250),
+                       p(tags$br(),"The bars on this dashboard show the per unit cost to build various types of development (ADUs, Multi-family, and single family) in the Tahoe Basin portion of El Dorado County. Each bar is color coded to represent the cost category (land, fees, etc.) shown on the right-hand side. Use this dashboard to select a cost-reducing action on the left-hand panel. Once selected, the bars will change to show how different actions/strategies taken by TRPA, local jurisdictions, and other partners affect the overall development costs."),
+                       p(tags$br(), "Disclaimer: Assumptions used in this tool are based on a 2018 pro forma report completed by Placeworks and discussions with local developers. This tool is for broad illustrative purposes only and may not capture every building cost. Costs can vary widely on a site-by-site basis and may differ by county. Assumptions were last updated on November 2020." )
+  )),
+  dashboardBody(tags$style(HTML("
+      .box.box-solid.box-primary>.box-header { color:#FDFDFD;background:#040404}
+      .skin-black .main-sidebar { background-color: #000000;}
+      .small-box.bg-yellow { background-color: #057A73 !important; color: #fff !important; }")),fluidRow(
+    column(width=2,box(width=12, title="Select Cost-Reducing Actions",status = 'primary', solidHeader = TRUE,
+                       checkboxGroupInput("actions", label=NULL, 
+                                                     choices=cost %>% filter(Action != "No Action") %>% distinct(Action) %>% pull())
+                       )),
+    column(width=10,box(width=12,title="Residential Development Costs",status = 'primary', solidHeader = TRUE,
+                       plotlyOutput("plot", height="750px")))
+  ))
+)
+server <- function(input, output) { 
+  showModal(modalDialog(title = "Disclaimer",
+                        "Assumptions used in this tool are based on a 2018 pro forma report completed by Placeworks and discussions with local developers. These are estimated costs for the Tahoe Basin portion of El Dorado County. This tool is for broad illustrative purposes only and may not capture every building cost. Costs can vary widely on a site-by-site basis and may differ by county. Assumptions were last updated on November 2020. "))
+  data<-reactive({
+    selected<-cost_test %>% group_by(id) %>% mutate(choose=case_when(Action %in% c(input$actions) ~ "Selected", TRUE ~ "Not Selected")) %>%
+      ungroup() %>% 
+      filter(choose=="Selected") 
+    cost_test %>% filter((id %in% c(selected %>% distinct(id) %>% pull()) & Action != "No Action") | 
+                 (!id %in% c(selected %>% distinct(id) %>% pull()) & Action == "No Action")) %>% mutate(Cost_Quantity=Cost/`Unit Quantity`) %>%
+      group_by(`Development Type`,`Cost Category`) %>%
+      summarise(Cost_Quantity=sum(Cost_Quantity))
+  })
+  diff<-reactive({
+    selected<-cost_test %>% group_by(id) %>% mutate(choose=case_when(Action %in% c(input$actions) ~ "Selected", TRUE ~ "Not Selected")) %>%
+      ungroup() %>% 
+      filter(choose=="Selected") 
+    bind_cols(
+    cost_test %>% filter((id %in% c(selected %>% distinct(id) %>% pull()) & Action != "No Action") | 
+                           (!id %in% c(selected %>% distinct(id) %>% pull()) & Action == "No Action")) %>% mutate(Cost_Quantity=Cost/`Unit Quantity`) %>%
+      group_by(`Development Type`,`Cost Category`) %>%
+      summarise(Cost_Quantity=sum(Cost_Quantity)) %>%
+      group_by(`Development Type`) %>%
+      summarise(Cost_Quantity=sum(Cost_Quantity)), 
+    cost %>% 
+      filter(Action=="No Action") %>%
+      group_by(`Cost Category`, `Development Type`,`Unit Quantity`) %>%
+      summarise(Cost=sum(Cost)) %>%
+      mutate(Cost=Cost/`Unit Quantity`) %>%
+      ungroup() %>%
+      group_by(`Development Type`) %>%
+      summarise(Cost=sum(Cost))
+    ) %>%
+      mutate(reduction=Cost-Cost_Quantity, percent_reduction=percent(reduction/Cost)) %>%
+      rename(`Development Type`=`Development Type...1`) %>%
+      select(-`Development Type...3`)
+  })
+output$plot <- renderPlotly({
+  if (is.null(input$actions)){ 
+     ggplotly(
+cost %>% 
+  filter(Action=="No Action") %>%
+        group_by(`Cost Category`, `Development Type`,`Unit Quantity`) %>%
+        summarise(Cost=sum(Cost)) %>%
+  mutate(Cost=Cost/`Unit Quantity`) %>%
+  ungroup() %>%
+        ggplot(aes(`Development Type`,Cost, fill=`Cost Category`,
+                   text=paste('<b>Development Type: </b>', `Development Type`,
+                              '<br><b>Cost: </b>', dollar(Cost),
+                              '<br><b>Cost Category: </b>', `Cost Category`))) + geom_col(colour="white") +
+        scale_fill_manual(values=c("#66CC99","#710803","#060300","#028589","#FAAB61","#241B5F"))+
+       # geom_hline(yintercept=60200, linetype="dashed", color = "red") +
+        #geom_hline(yintercept=90200, linetype="dashed", color = "red") +
+        #geom_hline(yintercept=124163, linetype="dashed", color = "red") +
+        theme_minimal() + theme(axis.title=element_blank(), axis.text.x=element_text( hjust=1, size=12))  +
+        scale_y_continuous(labels=dollar_format(), limits=c(0,800000), breaks=c(0,100000,200000,300000,400000,500000,600000,700000,800000))  +
+       geom_text(
+          aes(label = dollar(stat(y)), group = `Development Type`, y = Cost + 1500), 
+          stat = 'summary', fun = sum)+
+     # annotate("text", x = 5.8, y = 70000, label = "Affordable",size=3) +
+     # annotate("text", x = 5.8, y = 100000, label = "Moderate",size=3) +
+     # annotate("text", x = 5.85, y = 135000, label = "SF Achieveable",size=3) +
+  coord_cartesian( clip = "off", xlim = c(1,5.6) ), tooltip = c("text")
+) %>% config(displayModeBar = F)
+    } else{
+      ggplotly(
+        ggplot(data=cost %>% 
+                 filter(Action=="No Action") %>%
+                 group_by(`Cost Category`, `Development Type`,`Unit Quantity`) %>%
+                 summarise(Cost=sum(Cost)) %>%
+                 mutate(Cost=Cost/`Unit Quantity`) %>%
+                 ungroup() %>%
+                 group_by(`Development Type`) %>%
+                 summarise(Cost=sum(Cost, na.rm=T)), aes(`Development Type`,Cost)) +
+               # text=paste('<b>Development Type: </b>', `Development Type`,
+               # '<br><b>Cost: </b>', dollar(Cost_Quantity),
+               # '<br><b>Cost Category: </b>', `Cost Category`)
+         geom_col(fill="black", alpha=.1) +
+          geom_col(data=data(),aes(`Development Type`,Cost_Quantity, fill=`Cost Category`,
+                                   text=paste('<b>Development Type: </b>', `Development Type`,
+                                              '<br><b>Cost: </b>', dollar(Cost_Quantity),
+                                              '<br><b>Cost Category: </b>', `Cost Category`)
+          ),colour="white") +
+          scale_fill_manual(values=c("#66CC99","#710803","#060300","#028589","#FAAB61","#241B5F"))  +
+          theme_minimal() + theme(axis.title=element_blank(), axis.text.x=element_text( hjust=1, size=12)) +
+          scale_y_continuous(labels=dollar_format(), limits=c(0,800000), breaks=c(0,100000,200000,300000,400000,500000,600000,700000,800000))   +
+          geom_text(data=data(),
+            aes(label = dollar(stat(y)), group = `Development Type`, y = Cost_Quantity + 1500), 
+            stat = 'summary', fun = sum)+
+          #geom_text(data=diff(), colour="#0CAB23",
+                  #  aes(label = paste0("- ",dollar(reduction, accuracy=1)), x = `Development Type`, y = 800000))+
+          coord_cartesian( clip = "off", xlim = c(1,5.6) ), tooltip = c("text")
+      ) %>% config(displayModeBar = F)
+  }
+  })
+  }
+shinyApp(ui, server)
+
+
