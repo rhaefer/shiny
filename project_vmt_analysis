@@ -1,0 +1,553 @@
+library(shiny)
+library(tidyverse)
+library(shinydashboard)
+library(sf)
+library(leaflet)
+library(DT)
+library(scales)
+library(formattable)
+library(geojsonio)
+library(htmltools)
+library(lwgeom)
+library(readxl)
+library(shinycssloaders)
+library(tmap)
+library(tidyr)
+
+#### load data ####
+
+trip_rates<- read_excel("Commercial_Assessment_MC_2.0.xlsx", sheet="list_clean") %>%
+  filter(!use %in% c("Single-Family Detached","Senior Adult Housing – Attached","Congregate Care Facility (Residential Care)", "Multi-Family (low-rise, one or two levels)")) 
+
+jur <- st_read(".", "jurisdictions")%>% st_as_sf()  %>%
+  st_transform(crs=4326)
+
+pia_zones<-sf::st_read(".","PIA_Zones") %>%
+  mutate(zone_no=extract_numeric(zone_id))
+
+res_data<-read_csv("residential_data.csv") %>%
+  select(-geometry) %>%
+  mutate(sos=jur_total_vmt_capita*.85)
+
+res_data_sf<-pia_zones %>% left_join(res_data, by="zone_id")%>%
+  select(zone_id,zone_vmt_per_capita, jur_total_vmt_capita, percent_threshold,cat,sos, COUNTY, zone_vmt,zone_pop)
+
+#write.csv(res_data_sf %>% data.frame() %>% select(-c(geometry)), "residential_table.csv", row.names=F)
+
+tau_data<-read_csv("tau_data.csv") %>%
+  select(-geometry)
+
+tau_data_sf<-pia_zones %>% left_join(tau_data, by="zone_id")
+
+length_data<-read_csv("trip_length_data.csv")%>%
+  select(-geometry)
+
+length_data_sf<-pia_zones %>% left_join(length_data, by="zone_id") 
+
+length_jur<-st_join(st_buffer(length_data_sf,.00001), st_buffer(jur %>% dplyr::select("COUNTY"),.00001), largest=T) %>%
+  mutate(COUNTY=case_when(zone_id=="Zone 21" ~ "CSLT",
+                          TRUE ~as.character(COUNTY)),
+         jur_average=case_when(COUNTY=="CARSON" ~ 13.1,
+                               COUNTY=="CSLT" ~ 4.26,
+                               COUNTY=="DOUGLAS" ~ 6.37,
+                               COUNTY=="EL DORADO" ~ 6.69,
+                               COUNTY=="PLACER" ~ 6.51,
+                               COUNTY=="WASHOE" ~ 5.56),
+         threshold_15_below = jur_average * .85,
+         percent_threshold=avg_zone_trip_length/threshold_15_below,
+         cat=case_when(percent_threshold < .5 ~ "Less than 50% of threshold",
+                       between(percent_threshold,.5, .75) ~ "50-75% of threshold",
+                       between(percent_threshold,.751, .99999) ~ "75-100% of threshold",
+                       between(percent_threshold,1, 1.25) ~ "100-125% of threshold",
+                       between(percent_threshold,1.251, 1.5) ~ "125-150% of threshold",
+                       percent_threshold > 1.5 ~ "Over 150% of threshold"))
+
+
+#write.csv(length_jur %>% data.frame() %>% select(-c(geometry)), "trip_length_table.csv", row.names=F)
+
+length_jur$cat1 <- factor(length_jur$cat, levels=c("Over 150% of threshold",
+                                                     "125-150% of threshold",
+                                                     "100-125% of threshold",
+                                                     "75-100% of threshold",
+                                                     "50-75% of threshold",
+                                                     "Less than 50% of threshold"))
+
+pal_length_jur <- colorFactor(ordered = T,
+                   palette = c('#6B0402','#EE3835','#FAAAA9',   '#A1CDF4' ,'#0679DF','#033663'),
+                   levels=levels(length_jur$cat1))
+
+popup_length_jur = paste0('<strong>',"Zone: ", '</strong>',length_jur$zone_id,"<br>",
+               '<strong>',"Jurisdiction: ", '</strong>',length_jur$COUNTY,"<br>",
+               '<strong>',"Avg Zone Trip Length: ", '</strong>',round(length_jur$avg_zone_trip_length,2),"<br>",
+               '<strong>',"Jurisdiction Avg Trip Length: ", '</strong>',round(length_jur$jur_average,2),"<br>",
+               '<strong>',"Jurisdiction Threshold (15% Below Regional Avg): ", '</strong>',format(length_jur$threshold_15_below,digits=3, big.mark=","),"<br>",
+               '<strong>',"Zone Percent of Threshold (15% Below Regional Avg): ", '</strong>',percent(length_jur$percent_threshold,digits=0),"<br>",
+               '<strong>',"Zone Category: ", '</strong>',length_jur$cat
+)
+
+res_data_sf$cat1 <- factor(res_data_sf$cat, levels=c("Over 150% of threshold",
+                                         "125-150% of threshold",
+                                         "100-125% of threshold",
+                                         "75-100% of threshold",
+                                         "50-75% of threshold",
+                                         "Less than 50% of threshold"))
+
+pal <- colorFactor(ordered = T,
+                   palette = c('#6B0402','#EE3835','#FAAAA9',   '#A1CDF4' ,'#0679DF','#033663'),
+                   levels=levels(res_data_sf$cat1))
+
+popup = paste0('<strong>',"Zone: ", '</strong>',res_data_sf$zone_id,"<br>",
+               '<strong>',"Jurisdiction: ", '</strong>',res_data_sf$COUNTY,"<br>",
+               '<strong>',"Zone VMT: ", '</strong>',format(res_data_sf$zone_vmt,digits=0, big.mark=","),"<br>",
+               '<strong>',"Zone Residential Population: ", '</strong>',format(res_data_sf$zone_pop,digits=0, big.mark=","),"<br>",
+               '<strong>',"Avg Zone VMT Per Resident: ", '</strong>',format(res_data_sf$zone_vmt_per_capita,digits=3, big.mark=","),"<br>",
+               '<strong>',"Jurisdiction Avg VMT Per Capita: ", '</strong>',format(res_data_sf$jur_total_vmt_capita,digits=4, big.mark=","),"<br>",
+               '<strong>',"Jurisdiction Threshold (15% Below Regional Avg): ", '</strong>',format(res_data_sf$sos,digits=3, big.mark=","),"<br>",
+               '<strong>',"Zone Percent of Threshold (15% Below Regional Avg): ", '</strong>',percent(res_data_sf$percent_threshold,digits=0),"<br>",
+               '<strong>',"Zone Category: ", '</strong>',res_data_sf$cat
+)
+
+tc_shape <- geojson_read("https://opendata.arcgis.com/datasets/85a2e8e4bf994742a5855c1339517681_4.geojson", what="sp") %>%
+  st_as_sf(crs=4326)
+
+tc_half<-st_read("VMT_Analysis.gdb","Town_center_Buffer_half_mile") %>% st_transform(crs=4326) %>%
+  filter(!Name %in% c("NEVADA SOUTH STATELINE RESORT AREA","STATELINE/SKI RUN"))
+tc_half$area <- st_area(tc_half)
+tc_half <-tc_half %>%
+  summarise(area = sum(area))
+
+regional_half <-st_read("VMT_Analysis.gdb","Town_center_Buffer_half_mile") %>% st_transform(crs=4326) %>% filter(Name %in% c("NEVADA SOUTH STATELINE RESORT AREA","STATELINE/SKI RUN"))
+
+regional_half$area <- st_area(regional_half)
+
+regional_half <-regional_half %>%
+  summarise(area = sum(area))
+
+tc_half  <- st_difference(tc_half, st_combine(regional_half))
+
+tc_walk<-st_read("VMT_Analysis.gdb","Town_center_Walkshed") %>% st_transform(crs=4326)
+tc_walk$area <- st_area(tc_walk)
+tc_walk <-tc_walk %>%
+  summarise(area = sum(area))
+
+transit_buffer<-sf::st_read(".","transit_buffer_2019") %>% st_as_sf() %>%
+  sf::st_transform(crs=4326)
+
+bike_buff<-st_read(".","bike_path_half_buffer") %>% st_transform(crs=4326)
+
+walk_buff<-st_read(".","walk_quarter_buffer") %>% st_transform(crs=4326)
+
+buffer<-st_union(walk_buff, tc_half)
+buffer  <- st_difference(buffer, st_combine(regional_half))
+
+length_data_sf$cat1 <- factor(length_data_sf$cat, 
+                                 levels=c("under 4 mi",
+                                          "4-6 mi",
+                                          "6-8 mi",
+                                          "8-10 mi",
+                                          "10-12 mi",
+                                          "above 12 mi"))
+
+pal1 <- colorFactor(ordered = T,
+                   palette = c('#033663','#0679DF',   '#A1CDF4','#FAAAA9','#EE3835','#6B0402'),
+                   levels=levels(length_data_sf$cat1))
+
+popup1 = paste0('<strong>',"Zone: ", '</strong>',length_data_sf$zone_id,"<br>",
+               '<strong>',"Zone Avg Trip Length: ", '</strong>',format(length_data_sf$avg_zone_trip_length,digits=2, big.mark=",")
+)
+
+#### --------------------------- ####
+
+ui <- dashboardPage(skin="black",
+  dashboardHeader(title="DRAFT -- Project Impact Analysis Tool -- DRAFT", titleWidth = 550),
+  dashboardSidebar(width=300,box(width=12,background="black",
+                                 img(src='zoom_background_50th.jpg',  height = 150, width = 250),
+                                 p(tags$br(),"This tool calculates a project's VMT, mitigation, and fee. Begin by selecting your project type from the dropdown and then selecting your project location on the map. Then enter the number of proposed units and potentially mitigation strategies. ")
+  )),
+  dashboardBody(tags$style(type="text/css",
+                            ".shiny-output-error { visibility: hidden; }",
+                            ".shiny-output-error:before { visibility: hidden;}" ,
+  HTML("
+      .skin-black .main-sidebar { background-color: #000000;}")),
+                fluidRow(
+    column(width=2,
+           fluidRow(box(textInput("proj_name","Enter Project Name"),
+             selectInput("proj_type", "Select Project Type",choices=c("Residential","Type Not Listed" ,unique(trip_rates$use))), 
+             uiOutput("custom_type"),
+            uiOutput("ui"), 
+            uiOutput("custom_rate"),
+            uiOutput("ui_5"),
+            uiOutput("ui_7"),
+            #uiOutput("ui_4"),
+            uiOutput("ui_3"),
+            #uiOutput("ui_6"),
+            uiOutput("screen_yes_no"),width=12))),
+    column(width=6,box(title="Select Project Location",leafletOutput("map", height=700) %>% withSpinner(), width=12)),
+    column(width=2,
+           box(width=12,
+              fluidRow(valueBoxOutput("tot_vmt", width=12)),
+              fluidRow(valueBoxOutput("proj_sos", width=12)),
+              fluidRow(valueBoxOutput("mitigate", width=12)),
+              fluidRow(valueBoxOutput("mobility_fee", width=12)),
+              uiOutput("ui_2")
+                         )))
+  )
+)
+server <- function(input, output) {
+  showModal(modalDialog(title = "TRPA Project Impact Analysis Tool",
+                        "This tool calculates a project's VMT, mitigation, and fee. Begin by selecting your project type from the dropdown and then selecting your project location on the map. Then enter the number of proposed units and potentially mitigation strategies. "))
+  datasetInput <- reactive({
+         if(input$proj_type=="Residential"){
+           res_data_sf
+           } else{
+             length_jur
+           }
+      })
+  output$ui <-renderUI({
+    req(input$map_shape_click)
+    if (is.null(input$proj_type)){
+      return()
+    }else if (input$proj_type=="Residential"){
+      numericInput("res_units", "Number of Residential Units",
+                   value = 0)
+    } else if (input$proj_type %in% c("Hotel","Motel","Timeshare")){
+      numericInput("taus", "Number of TAUS",
+                   value = 0)
+    } else if (input$proj_type =="Type Not Listed"){
+      numericInput("input_custom_unit", "Number of Units",
+                   value = 0)
+    }else {
+      numericInput("ksf", "Square Footage (KSF)",
+                   value = 0)
+    }
+  })
+  output$custom_rate <-renderUI({
+    req(input$map_shape_click)
+    if (input$proj_type == "Type Not Listed"){
+      numericInput("input_custom_rate", "Trip Rate",
+                   value = 0)
+    } else {
+      return()
+    }
+  })
+  output$custom_type <-renderUI({
+    req(input$map_shape_click)
+    if (input$proj_type == "Type Not Listed"){
+      textInput("custom_proj_type","Enter Project Type")
+    } else {
+      return()
+    }
+  })
+  output$ui_2 <-renderUI({
+    req(input$map_shape_click)
+    if (input$res_units < 1 | tot_vmt_react() < proj_sos_react() | (input$low_income_screen==TRUE & (nrow(transit()) > 0)))
+      return()
+    else{
+      checkboxGroupInput(inputId="mitigations", label="Select Mitigations", 
+                         choices=c("Bike Racks"=10, "Showers"=30, "Employer Shuttle"=40, "Mixed Use"=60))
+    }
+  })
+  output$ui_3 <-renderUI({
+    req(input$map_shape_click)
+    if (nrow(tc_buffer()) == 0){
+      valueBoxOutput("tc_buffer1", width=12)
+    }else {
+      valueBoxOutput("tc_buffer2", width=12)
+    }
+  })
+  output$ui_7 <-renderUI({
+    req(input$map_shape_click)
+    if (nrow(reg_buffer()) == 0){
+      valueBoxOutput("reg_buffer1", width=12)
+    }else {
+      valueBoxOutput("reg_buffer2", width=12)
+    }
+  })
+#  output$ui_8 <-renderUI({
+   # req(input$map_shape_click)
+    #if (input$low_income_screen==TRUE & (nrow(transit()) > 0)){
+    #  valueBoxOutput("proj_sos_NA", width=12)
+   # }else if(tot_vmt_react() > 1300) {
+     # valueBoxOutput("proj_sos", width=12)
+  #  } else {
+    #  valueBoxOutput("proj_sos_NA", width=12)
+   # }
+  #})
+  output$screen_yes_no <-renderUI({
+    req(input$map_shape_click)
+    if (input$low_income_screen==TRUE & (nrow(transit()) > 0)){
+      valueBoxOutput("screened_yes", width=12)
+    }else if(tot_vmt_react() > 1300) {
+      valueBoxOutput("screened_no", width=12)
+    } else {
+      valueBoxOutput("screened_yes", width=12)
+    }
+  })
+  output$ui_10 <-renderUI({
+    req(input$map_shape_click)
+    if (input$low_income_screen==TRUE & (nrow(transit()) > 0)){
+      valueBoxOutput("fee_no_mit", width=12)
+    }else if(tot_vmt_react() < 1300) {
+      valueBoxOutput("fee_no_mit", width=12)
+    } else {
+      valueBoxOutput("fee_mit", width=12)
+    }
+  })
+ # output$ui_4 <-renderUI({
+  #  req(input$map_shape_click)
+   # if (nrow(tc()) == 0){
+     # valueBoxOutput("tc_1", width=12)
+   # }else {
+    #  valueBoxOutput("tc_2", width=12)
+    #}
+ # })
+  output$ui_6 <-renderUI({
+    req(input$map_shape_click)
+    if (nrow(transit()) > 0 & input$low_income_screen==TRUE){
+      valueBoxOutput("trans_2", width=12)
+    }else {
+      valueBoxOutput("trans_1", width=12)
+    }
+  })
+  output$ui_5 <-renderUI({
+    req(input$map_shape_click)
+    req(input$res_units)
+    if(input$proj_type=="Residential"){
+      checkboxInput("low_income_screen", "Low Income Units")
+    } else{
+      return()
+    }
+  })
+  map_event <-reactive({ 
+    req(input$map_shape_click)
+    input$map_shape_click$id
+  })
+  output$map <- renderLeaflet({
+    datasetInput() %>%
+      leaflet() %>% addProviderTiles("OpenStreetMap.HOT") %>%
+      addPolygons(data=tc_half, group="Town Center 1/2 Mile Buffer", fill=F, opacity=1) %>%
+      addPolygons(data=jur, group="Jurisdiction", fill=F, opacity=1, color="yellow") %>%
+      addPolygons(data=regional_half, group="Regional Center 1/2 Buffer", fill=F, color="black", opacity=1) %>%
+      addPolygons(data=bike_buff, group="Bike Path 1/4 Buffer", fill=F, color="black", opacity=1) %>%
+      addPolygons(data=buffer, group="Town Center & Sidewalk Buffer", fill=F, color="green", opacity=1) %>%
+      addPolygons(data=walk_buff, group="Sidewalk 1/4 Buffer", fill=F, color="red", opacity=1) %>%
+      addPolygons(data=tc_walk, group="Town Center Walk Shed", fill=F, color="orange", opacity=1) %>%
+      addPolygons(data=tc_shape, group="Town Center", fill=F, opacity=1) %>%
+      addPolygons(data=transit_buffer, group="Transit Buffer", fill=F, color="purple", opacity=1) %>%
+      addPolygons(data=res_data_sf,weight=2, fillColor=~pal(cat1), color="white", fillOpacity = 0.6,
+                  label = lapply(popup, HTML), group="Residential",
+                      highlightOptions = highlightOptions(stroke = 4, weight = 4, color="black", opacity=1)) %>%
+      addPolygons(data=length_jur,weight=2, fillColor=~pal_length_jur(cat1), color="white", fillOpacity = 0.6,
+                  label = lapply(popup_length_jur, HTML), group="Trip Length Jurisidictional SOS",
+                  highlightOptions = highlightOptions(stroke = 4, weight = 4, color="black", opacity=1)) %>%
+      addPolygons(data=length_data_sf,weight=2, color="white",fillColor=~pal1(cat1), fillOpacity = .7,  label = lapply(popup1, HTML), group="Trip Length",
+                      highlightOptions = highlightOptions(stroke = 4, weight = 4, color="black", opacity=1)) %>%
+      addPolygons(layerId=~zone_id,opacity = 0, fillOpacity = 0) %>%
+      addLayersControl(
+        overlayGroups = c("Residential","Trip Length Jurisidictional SOS","Trip Length","Town Center 1/2 Mile Buffer","Town Center","Transit Buffer","Regional Center 1/2 Buffer","Town Center Walk Shed","Bike Path 1/4 Buffer","Sidewalk 1/4 Buffer","Town Center & Sidewalk Buffer","Jurisdiction"),
+        options = layersControlOptions(collapsed = FALSE)
+      ) %>% hideGroup(c("Residential","Trip Length Jurisidictional SOS","Trip Length","Town Center 1/2 Mile Buffer","Town Center","Transit Buffer","Regional Center 1/2 Buffer","Town Center Walk Shed","Bike Path 1/4 Buffer","Sidewalk 1/4 Buffer","Town Center & Sidewalk Buffer","Jurisdiction"))
+  })
+  observeEvent(input$map_click, {
+    click <- input$map_click
+    text<-paste("Latitude ", round(click$lat,2), "Longtitude ", round(click$lng,2))
+    proxy <- leafletProxy("map")
+    ## This displays the pin drop circle
+    proxy %>% 
+      clearGroup("new_point") %>%
+      #clearMarkers(layerId=input$mymap_click$id) %>%
+      #addPopups(click$lng, click$lat) %>%
+      addMarkers(click$lng, click$lat, group = "new_point")
+  })
+  proj_loc<-reactive({
+    click <- input$map_click
+    points <- data.frame(lat=as.numeric(click$lat), lon=as.numeric(click$lng))
+    points %>% st_as_sf(crs=4326, coords=c("lon","lat"))
+  })
+tc_buffer<-reactive({
+  st_intersection(proj_loc(), st_buffer(tc_half, 0))
+  })
+reg_buffer<-reactive({
+  st_intersection(proj_loc(), st_buffer(regional_half, 0))
+})
+#tc<-reactive({
+ # st_intersection(proj_loc(), st_buffer(tc_shape, 0))
+#})
+transit<-reactive({
+  st_intersection(proj_loc(), st_buffer(transit_buffer, 0))
+})
+  tot_vmt_react<-reactive({
+    req(input$map_shape_click)
+    if(input$proj_type %in% c("Hotel","Motel","Timeshare") & (nrow(reg_buffer()) > 0)){
+      round((datasetInput() %>% filter(zone_id==map_event()) %>% pull(avg_zone_trip_length) * 
+               trip_rates %>% filter(use == input$proj_type) %>% pull(Rate) * 
+               input$taus)* 0.65,0) 
+    } else if(input$proj_type %in% c("Hotel","Motel","Timeshare") & (nrow(tc_buffer()) > 0)){
+      round((datasetInput() %>% filter(zone_id==map_event()) %>% pull(avg_zone_trip_length) * 
+               trip_rates %>% filter(use == input$proj_type) %>% pull(Rate) * 
+               input$taus)* 0.80,0) 
+    } else if(input$proj_type %in% c("Hotel","Motel","Timeshare")){
+      round(datasetInput() %>% filter(zone_id==map_event()) %>% pull(avg_zone_trip_length) * 
+              trip_rates %>% filter(use == input$proj_type) %>% pull(Rate) * 
+              input$taus,0)
+    }else if((nrow(reg_buffer()) > 0) & input$proj_type %in% c(trip_rates %>% filter(!use %in% c("Hotel","Motel","Timeshare","Residential")) %>% distinct(use) %>% pull())){
+      round((datasetInput() %>% filter(zone_id==map_event()) %>% pull(avg_zone_trip_length) * 
+               (trip_rates %>% filter(use == input$proj_type) %>% pull(Rate)/1000) * 
+               input$ksf)* 0.65,0) 
+    } else if(input$proj_type %in% c(trip_rates %>% filter(!use %in% c("Hotel","Motel","Timeshare","Residential")) %>% distinct(use) %>% pull()) & (nrow(tc_buffer()) > 0)){
+      round((datasetInput() %>% filter(zone_id==map_event()) %>% pull(avg_zone_trip_length) * 
+               (trip_rates %>% filter(use == input$proj_type) %>% pull(Rate)/1000) * 
+               input$ksf)* 0.8,0) 
+    }else if(input$proj_type %in% c(trip_rates %>% filter(!use %in% c("Hotel","Motel","Timeshare","Residential")) %>% distinct(use) %>% pull())){
+      round(datasetInput() %>% filter(zone_id==map_event()) %>% pull(avg_zone_trip_length) * 
+              (trip_rates %>% filter(use == input$proj_type) %>% pull(Rate)/1000) * 
+              input$ksf,0)
+    }else if(input$proj_type =="Type Not Listed" & (nrow(reg_buffer()) > 0)){
+      round((datasetInput() %>% filter(zone_id==map_event()) %>% pull(avg_zone_trip_length) * 
+               input$input_custom_rate * 
+               input$input_custom_unit)* 0.65,0) 
+    } else if(input$proj_type =="Type Not Listed" & (nrow(tc_buffer()) > 0)){
+      round((datasetInput() %>% filter(zone_id==map_event()) %>% pull(avg_zone_trip_length) * 
+               input$input_custom_rate * 
+               input$input_custom_unit)* 0.80,0) 
+    } else if(input$proj_type =="Type Not Listed"){
+      round(datasetInput() %>% filter(zone_id==map_event()) %>% pull(avg_zone_trip_length) * 
+              input$input_custom_rate * 
+              input$input_custom_unit,0)
+    }else if(input$low_income_screen==TRUE & (nrow(reg_buffer()) > 0) & input$proj_type=="Residential"){
+      round((datasetInput() %>% filter(zone_id==map_event()) %>% pull(zone_vmt_per_capita) * 2.3 * input$res_units) * 0.55,0)
+    }else if(input$low_income_screen==TRUE & (nrow(tc_buffer()) > 0) & input$proj_type=="Residential"){
+      round((datasetInput() %>% filter(zone_id==map_event()) %>% pull(zone_vmt_per_capita) * 2.3 * input$res_units) * 0.7,0)
+    }else if(input$low_income_screen==TRUE & input$proj_type=="Residential"){
+      round((datasetInput() %>% filter(zone_id==map_event()) %>% pull(zone_vmt_per_capita) * 2.3 * input$res_units) * 0.9,0)
+    }else if((nrow(tc_buffer()) > 0) & input$proj_type=="Residential"){
+      round((datasetInput() %>% filter(zone_id==map_event()) %>% pull(zone_vmt_per_capita) * 2.3 * input$res_units) * .8,0)
+    } else if((nrow(reg_buffer()) > 0) & input$proj_type=="Residential"){
+      round((datasetInput() %>% filter(zone_id==map_event()) %>% pull(zone_vmt_per_capita) * 2.3 * input$res_units) * .65,0)
+    }else if(input$proj_type=="Residential"){
+    round(datasetInput() %>% filter(zone_id==map_event()) %>% pull(zone_vmt_per_capita) * 2.3 * input$res_units,0)
+    }
+  })
+  proj_sos_react<-reactive({
+    req(input$map_shape_click)
+    if(input$proj_type %in% c("Hotel","Motel","Timeshare")){
+      round(datasetInput() %>% filter(zone_id==map_event()) %>% pull(threshold_15_below) * 
+              trip_rates %>% filter(use == input$proj_type) %>% pull(Rate) * 
+              input$taus,0)
+    } else if(input$proj_type %in% c(trip_rates %>% filter(!use %in% c("Hotel","Motel","Timeshare","Residential")) %>% distinct(use) %>% pull())){
+      round(datasetInput() %>% filter(zone_id==map_event()) %>% pull(threshold_15_below) * 
+              (trip_rates %>% filter(use == input$proj_type) %>% pull(Rate)/1000) * 
+              input$ksf,0)
+    }  else if(input$proj_type =="Type Not Listed"){
+      round(datasetInput() %>% filter(zone_id==map_event()) %>% pull(threshold_15_below) * 
+              input$input_custom_rate * 
+              input$input_custom_unit,0)
+    } else if(input$proj_type=="Residential"){
+    round(datasetInput() %>% filter(zone_id==map_event()) %>% pull(sos) * 2.3 * input$res_units,0)
+    }
+  })
+output$tot_vmt <-renderValueBox({
+  req(input$map_shape_click)
+  valueBox(subtitle="Project Total VMT", width=6, color="navy",
+    value= comma(tot_vmt_react(), 0)
+  )
+})
+output$proj_sos <-renderValueBox({
+  req(input$map_shape_click)
+  valueBox(subtitle="Project SOS VMT", width=6, color="navy",
+           value=comma(proj_sos_react(), 0)
+  )
+})
+output$screened_no <-renderValueBox({
+  req(input$res_units)
+  valueBox(subtitle="Screened", width=6, color="black",
+           value="No"
+  )
+})
+output$screened_yes <-renderValueBox({
+  req(input$res_units)
+  valueBox(subtitle="Screened", width=6, color="green",
+           value="Yes"
+  )
+})
+output$tc_buffer1 <-renderValueBox({
+  req(input$map_shape_click)
+  valueBox(subtitle="Town Center Incentive (20%)", width=6, color="black",
+           value="No")
+})
+output$tc_buffer2 <-renderValueBox({
+  req(input$map_shape_click)
+  valueBox(subtitle="Town Center Incentive (20%)", width=6, color="orange",
+           value="Yes")
+})
+output$reg_buffer1 <-renderValueBox({
+  req(input$map_shape_click)
+  valueBox(subtitle="Regional Center Incentive (35%)", width=6, color="black",
+           value="No")
+})
+output$reg_buffer2 <-renderValueBox({
+  req(input$map_shape_click)
+  valueBox(subtitle="Regional Center Incentive (35%)", width=6, color="orange",
+           value="Yes")
+})
+#output$tc_1 <-renderValueBox({
+  #req(input$map_shape_click)
+ # valueBox(subtitle="Town Center Screen", width=6, color="black",
+        #   value="No")
+#})
+#output$tc_2 <-renderValueBox({
+ # req(input$map_shape_click)
+ # valueBox(subtitle="Town Center Screen", width=6, color="green",
+          # value="Yes")
+#})
+output$trans_1 <-renderValueBox({
+  req(input$map_shape_click)
+  valueBox(subtitle="Affordable Housing Screen", width=6, color="black",
+           value="No")
+})
+output$trans_2 <-renderValueBox({
+  req(input$map_shape_click)
+  valueBox(subtitle="Affordable Housing Screen", width=6, color="green",
+           value="Yes")
+})
+mitigation_calcs<- reactive({
+  req(input$map_shape_click)
+    tot_vmt_react() - proj_sos_react() - sum(as.numeric(input$mitigations))
+})
+mit_needed <- reactive({
+  if((tot_vmt_react() - proj_sos_react())<0){
+    0} else if (input$low_income_screen==TRUE & (nrow(transit()) > 0)){
+      0} else if(tot_vmt_react() < 1300) {
+        0} else if (!is.null(input$mitigations)){
+          round((tot_vmt_react() - proj_sos_react()) * (1-(sum(as.numeric(input$mitigations))/200)),0)
+        } else {(tot_vmt_react() - proj_sos_react())}
+})
+output$mitigate <-renderValueBox({
+  valueBox(subtitle="VMT Mitigation Needed", width=6, color="navy",
+           value= comma(mit_needed(), 0)
+  )
+})
+output$mitigate_NA <-renderValueBox({
+  valueBox(subtitle="VMT Mitigation Needed", width=6, color="navy",
+           value="Screened"
+  )
+})
+mob_fee_calc <- reactive({
+  if(tot_vmt_react() < proj_sos_react()){
+    tot_vmt_react() * 100
+  } else(proj_sos_react() * 100)
+})
+output$mobility_fee <-renderValueBox({
+  req(input$map_shape_click)
+  req(input$res_units)
+  valueBox(subtitle="Mobility Fee ($100/VMT)", width=6, color="red",
+           value= tags$p(
+             dollar(tot_vmt_react() * 100),
+             style = "font-size: 75%;"
+           )
+  )
+})
+}
+shinyApp(ui, server)
+
+
